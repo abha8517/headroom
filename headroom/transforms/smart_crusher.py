@@ -179,17 +179,13 @@ class SmartCrusherConfig:
     dedup_identical_items: bool = True
     first_fraction: float = 0.3
     last_fraction: float = 0.15
-    # Lossless compaction only replaces the original when it saves at
-    # least this byte fraction vs the (minified) input. Mirrors the Rust
-    # default; mainly lowered in tests and KV experiments — KV repeats
-    # field names per row, so it clears the gate less often than CSV.
-    lossless_min_savings_ratio: float = 0.30
-
     # Minimum byte-savings ratio for the lossless Table/CSV compaction
     # path to win over the lossy path (0.15, matching the Rust default —
     # the two must stay in lockstep, see config.rs). Lossless output
     # needs no CCR retrieval round-trip when the model wants more rows,
-    # so it gets a lower bar than the lossy path.
+    # so it gets a lower bar than the lossy path. Mainly raised in tests
+    # and KV experiments — KV repeats field names per row, so it clears
+    # the gate less often than CSV.
     lossless_min_savings_ratio: float = 0.15
 
     # Compaction heuristics (mirror Rust CompactConfig; see
@@ -336,7 +332,6 @@ class SmartCrusher(Transform):
             dedup_identical_items=cfg.dedup_identical_items,
             first_fraction=cfg.first_fraction,
             last_fraction=cfg.last_fraction,
-            lossless_min_savings_ratio=cfg.lossless_min_savings_ratio,
             relevance_threshold=0.3,
             enable_ccr_marker=(
                 self._ccr_config.enabled and self._ccr_config.inject_retrieval_marker

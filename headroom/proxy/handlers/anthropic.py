@@ -1746,9 +1746,7 @@ class AnthropicHandlerMixin:
 
                     if _arm == "treatment":
                         _level, _src = resolve_verbosity_level(_shaper_settings)
-                        shape_result = shape_request(
-                            body, _shaper_settings, level_override=_level
-                        )
+                        shape_result = shape_request(body, _shaper_settings, level_override=_level)
                         if shape_result.changed:
                             body_mutation_tracker.mark_mutated("output_shaper")
                             transforms_applied.extend(shape_result.labels or [])

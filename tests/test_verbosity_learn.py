@@ -19,7 +19,14 @@ def _write_session(tmp_path: Path, name: str, lines: list[dict]) -> Path:
     return p
 
 
-def _assistant(text: str, *, ts: str, out_tokens: int = 100, model: str = "claude-opus-4-8", in_tokens: int = 5000) -> dict:
+def _assistant(
+    text: str,
+    *,
+    ts: str,
+    out_tokens: int = 100,
+    model: str = "claude-opus-4-8",
+    in_tokens: int = 5000,
+) -> dict:
     return {
         "type": "assistant",
         "timestamp": ts,
@@ -163,7 +170,9 @@ class TestRecommendLevel:
         return s
 
     def test_too_few_turns_defaults_l2_low(self):
-        level, conf, _ = recommend_level(self._sig(human=3, interrupts=0, skip_eligible=0, fast_skips=0))
+        level, conf, _ = recommend_level(
+            self._sig(human=3, interrupts=0, skip_eligible=0, fast_skips=0)
+        )
         assert level == 2
         assert conf == "low"
 
@@ -222,8 +231,12 @@ class TestAnalyze:
         from headroom.learn.verbosity import VerbosityProfile
 
         prof = VerbosityProfile(
-            project_path="/proj", level=3, confidence="high", source="heuristic",
-            rationale="because", signals={"interrupt_rate": 0.11},
+            project_path="/proj",
+            level=3,
+            confidence="high",
+            source="heuristic",
+            rationale="because",
+            signals={"interrupt_rate": 0.11},
         )
         path = tmp_path / "verbosity.json"
         prof.save(path)

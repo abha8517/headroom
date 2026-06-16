@@ -18,8 +18,13 @@ from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
 
+from ..config import StatsConfig
 from ..logging import get_logger
-from ..models import ArmName, TaskResult, TaskSavings
+from ..models import ArmName, EquivalenceVerdict, TaskResult, TaskSavings
+from ..stats.bootstrap import paired_bootstrap
+from ..stats.pairing import pair_arms
+from ..stats.tost import equivalence_verdict
+from ..stats.wilson import wilson_half_width_pp
 
 logger = get_logger("report.scorecard")
 
@@ -57,12 +62,19 @@ class ArmSummary(BaseModel):
 
 
 class Scorecard(BaseModel):
-    """The full Phase-0 scorecard: one summary per arm plus the headline naive delta."""
+    """The scorecard: one summary per arm, the naive headline delta, and — when statistics are
+    requested (Phase 1+) — the paired-bootstrap delta and TOST equivalence verdict."""
 
     experiment_id: str
     arms: list[ArmSummary] = Field(default_factory=list)
-    # B_HEADROOM resolved_rate - A1_PASSTHROUGH resolved_rate. None if either arm is absent.
+    # B_HEADROOM resolved_rate - A1_PASSTHROUGH resolved_rate (fraction). None if either arm absent.
     accuracy_delta_b_vs_a1: float | None = None
+    # Phase 1+ inferential fields (None unless build_scorecard was given a StatsConfig):
+    # paired-bootstrap mean per-task delta (pp) + CI, the TOST verdict against the lossy margin,
+    # and the single-arm Wilson noise floor (pp) for context.
+    equivalence: EquivalenceVerdict | None = None
+    accuracy_delta_pp: float | None = None
+    noise_floor_pp: float | None = None
     savings_note: str = _SAVINGS_NOTE
     stats_note: str = _STATS_NOTE
 
@@ -110,11 +122,21 @@ def _summarize_arm(arm: ArmName, cells: list[TaskResult]) -> ArmSummary:
     )
 
 
-def build_scorecard(results: list[TaskResult], experiment_id: str) -> Scorecard:
-    """Group ``results`` by arm, aggregate each, and compute the naive B-vs-A1 accuracy delta.
+def build_scorecard(
+    results: list[TaskResult],
+    experiment_id: str,
+    *,
+    stats_config: StatsConfig | None = None,
+) -> Scorecard:
+    """Group ``results`` by arm, aggregate each, and compute the headline B-vs-A1 delta.
 
-    Arms are emitted in the canonical :class:`ArmName` declaration order (so the rendered table is
-    stable regardless of input ordering). Arms with zero cells are omitted entirely.
+    Without ``stats_config`` this is the Phase-0 behaviour: a naive point delta only, no CI/verdict.
+    With ``stats_config`` (Phase 1+) it additionally pairs B vs A1 per task, runs the paired
+    bootstrap, and produces a TOST equivalence verdict against ``margin_lossy_pp`` plus the
+    single-arm Wilson noise floor. The verdict is left ``None`` when the two arms share no tasks.
+
+    Arms are emitted in canonical :class:`ArmName` declaration order; arms with zero cells are
+    omitted entirely.
     """
 
     by_arm: dict[ArmName, list[TaskResult]] = {}
@@ -142,10 +164,59 @@ def build_scorecard(results: list[TaskResult], experiment_id: str) -> Scorecard:
     else:
         accuracy_delta = treatment - baseline
 
-    return Scorecard(
+    scorecard = Scorecard(
         experiment_id=experiment_id,
         arms=summaries,
         accuracy_delta_b_vs_a1=accuracy_delta,
+    )
+
+    if stats_config is not None:
+        _attach_statistics(scorecard, results, by_arm, stats_config)
+
+    return scorecard
+
+
+def _attach_statistics(
+    scorecard: Scorecard,
+    results: list[TaskResult],
+    by_arm: dict[ArmName, list[TaskResult]],
+    stats_config: StatsConfig,
+) -> None:
+    """Compute the paired-bootstrap delta + TOST verdict (B vs A1) and attach to ``scorecard``."""
+
+    if _HEADLINE_TREATMENT not in by_arm or _HEADLINE_BASELINE not in by_arm:
+        scorecard.stats_note = (
+            "equivalence verdict unavailable: B_HEADROOM or A1_PASSTHROUGH missing"
+        )
+        return
+
+    paired = pair_arms(results, _HEADLINE_TREATMENT, _HEADLINE_BASELINE)
+    if not paired.task_ids:
+        scorecard.stats_note = "equivalence verdict unavailable: B and A1 share no tasks"
+        return
+
+    delta = paired_bootstrap(
+        paired,
+        alpha=stats_config.alpha,
+        n_resamples=stats_config.bootstrap_resamples,
+        seed=stats_config.seed,
+    )
+    verdict = equivalence_verdict(delta, stats_config.margin_lossy_pp)
+
+    baseline_cells = by_arm[_HEADLINE_BASELINE]
+    baseline_p = sum(1 for c in baseline_cells if c.resolved) / len(baseline_cells)
+    noise_floor = wilson_half_width_pp(
+        baseline_p, len(baseline_cells), confidence=1.0 - stats_config.alpha
+    )
+
+    scorecard.equivalence = verdict
+    scorecard.accuracy_delta_pp = delta.point
+    scorecard.noise_floor_pp = noise_floor
+    scorecard.stats_note = (
+        f"paired bootstrap (B-A1) {delta.point:+.2f}pp "
+        f"[{delta.ci_low:+.2f}, {delta.ci_high:+.2f}] at {int((1 - stats_config.alpha) * 100)}% CI; "
+        f"TOST vs ±{stats_config.margin_lossy_pp:.1f}pp ⇒ {verdict.verdict.upper()}; "
+        f"A1 Wilson half-width {noise_floor:.1f}pp (n={len(baseline_cells)})"
     )
 
 
@@ -162,7 +233,7 @@ def render_scorecard(scorecard: Scorecard) -> str:
     delta, and the stats note. No files are written; the string is built in memory.
     """
 
-    table = Table(title=f"Phase-0 Scorecard — {scorecard.experiment_id}")
+    table = Table(title=f"agent-evals Scorecard — {scorecard.experiment_id}")
     table.add_column("arm", no_wrap=True)
     table.add_column("label", no_wrap=True)
     table.add_column("cells", justify="right")
@@ -199,6 +270,14 @@ def render_scorecard(scorecard: Scorecard) -> str:
     # soft_wrap keeps each headline line intact (no width-driven mid-sentence newline), so the
     # full note strings remain contiguous and greppable in the exported text.
     console.print(f"HEADLINE accuracy delta: {delta_text}", soft_wrap=True)
+    if scorecard.equivalence is not None:
+        v = scorecard.equivalence
+        console.print(
+            f"HEADLINE verdict: {v.verdict.upper()} "
+            f"(B-A1 {v.delta.point:+.2f}pp [{v.delta.ci_low:+.2f}, {v.delta.ci_high:+.2f}] "
+            f"vs ±{v.margin:.1f}pp margin)",
+            soft_wrap=True,
+        )
     console.print(f"HEADLINE savings: {scorecard.savings_note}", soft_wrap=True)
     console.print(f"HEADLINE stats: {scorecard.stats_note}", soft_wrap=True)
     return console.export_text()

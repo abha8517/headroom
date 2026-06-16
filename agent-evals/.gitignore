@@ -22,3 +22,6 @@ htmlcov/
 # Secrets — never commit
 .env
 .env.*
+
+# Benchmark exercise checkout (cloned, not vendored)
+.cache/

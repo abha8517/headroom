@@ -26,6 +26,21 @@ class StatsConfig(BaseModel):
     seed: int = 12345
 
 
+class AiderConfig(BaseModel):
+    """Aider Polyglot harness knobs (Phase 1)."""
+
+    # Checkout of github.com/Aider-AI/polyglot-benchmark (cloned, not vendored).
+    exercises_dir: Path = Path(".cache/polyglot-benchmark")
+    language: str = "python"  # python/go/rust/java run locally; js/cpp need Docker (excluded)
+    edit_format: str = "whole"  # safe across arbitrary models
+    tries: int = Field(default=2, ge=1)  # pass_rate_1 = try 1; pass_rate_2 = within 2 tries
+    pytest_timeout_s: float = Field(default=180.0, gt=0.0)
+    # Subset selection for cheap smokes / dev. subset_names (exact exercise dir names) wins;
+    # else the first ``subset_limit`` exercises in sorted order; None limit = the full set.
+    subset_limit: int | None = None
+    subset_names: list[str] = Field(default_factory=list)
+
+
 class ProxyLaunchConfig(BaseModel):
     """How arms.py launches and probes the Headroom proxy. No command is hardcoded in logic."""
 
@@ -62,5 +77,15 @@ class Settings(BaseSettings):
     run_dir: Path = Path("./runs")
     log_level: str = "INFO"
     log_json: bool = True
+    # Path to a .env carrying provider keys for live runs. None => python-dotenv searches upward
+    # (finds the repo-root .env). Keys themselves are never stored in Settings.
+    dotenv_path: Path | None = None
     stats: StatsConfig = Field(default_factory=StatsConfig)
     proxy: ProxyLaunchConfig = Field(default_factory=ProxyLaunchConfig)
+    aider: AiderConfig = Field(default_factory=AiderConfig)
+
+    def litellm_model_name(self) -> str:
+        """The litellm-routed model name for the configured provider (e.g. ``anthropic/<snap>``)."""
+
+        prefix = "anthropic" if self.provider is Provider.ANTHROPIC else "openai"
+        return f"{prefix}/{self.model_snapshot}"

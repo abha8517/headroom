@@ -8,6 +8,7 @@ and ``Arm``/``ArmHandle`` so real adapters (Phase 1/2) and test fakes are interc
 from __future__ import annotations
 
 from pathlib import Path
+from types import TracebackType
 from typing import Protocol, runtime_checkable
 
 from .models import ArmSpec, BenchTask, GradeResult, Provider, RolloutResult, TaskSavings
@@ -33,7 +34,12 @@ class Arm(Protocol):
 
     async def __aenter__(self) -> ArmHandle: ...
 
-    async def __aexit__(self, *exc: object) -> None: ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...
 
 
 @runtime_checkable
